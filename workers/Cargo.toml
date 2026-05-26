@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "number-matcher",
+    "csv-processor",
+]
+resolver = "2"
