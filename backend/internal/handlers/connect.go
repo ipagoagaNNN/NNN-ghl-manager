@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -58,10 +59,12 @@ func Connect(vault *store.Vault) http.HandlerFunc {
 		vault.SetAgency(req.AgencyToken, req.CompanyID)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(connectResponse{
+		if err := json.NewEncoder(w).Encode(connectResponse{
 			LocationCount: len(locs),
 			Locations:     locs,
-		})
+		}); err != nil {
+			log.Printf("connect: encode response error: %v", err)
+		}
 	}
 }
 

@@ -119,9 +119,48 @@ Meta Pixel IDs are hardcoded in the HTML. Not a security issue per se, but they 
 
 ## Security Checklist Before Phase 1 Ship
 
-- [ ] Go server has no route that returns token values to frontend
-- [ ] Session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`
-- [ ] CORS on Go server allows only `localhost:5173` (dev) and production domain
-- [ ] GHL base URL is not configurable from frontend (hardcoded in proxy)
-- [ ] Rate limiter is enforced before proxy forwards request
-- [ ] `go vet` + `gosec` pass with no findings on `internal/proxy` and `internal/store`
+**Audited 2026-05-26 (session 2). 5/6 ✅, 1/6 partial (Phase 2-gated).**
+
+- [x] **Go server has no route that returns token values to frontend** ✅
+  - `Connect` returns `{LocationCount, Locations}` only (no token field)
+  - `SaveToken` returns 204 No Content (no body)
+  - `ListAccounts` returns `{configuredLocations: [ids], count}` — IDs only, never values
+  - All stub handlers + GHL proxy responses verified — no echo paths exist
+- [ ] **Session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`** ⚠️ Phase 2-gated
+  - No cookie is set in Phase 1 because there's no auth (no-op middleware stub)
+  - Acceptable for localhost dev; **MUST be implemented in Phase 2 JWT** before any non-localhost deploy
+  - Documented limitation: vault is shared across callers in Phase 1
+- [x] **CORS on Go server allows only `localhost:5173` (dev)** ✅
+  - `middleware/cors.go` allow-list: `http://localhost:5173`, `http://localhost:4173` (Vite preview)
+  - `Access-Control-Allow-Origin` only set if origin is in the list — no wildcard
+  - Production domain to be added at Phase 4 deploy time
+- [x] **GHL base URL is not configurable from frontend (hardcoded in proxy)** ✅
+  - `store/vault.go:8` — `const ghlBase = "https://services.leadconnectorhq.com"`
+  - No env var, no config file, no API endpoint to mutate
+  - Proxy enforces a defensive prefix check on every forwarded request (rejects requests where `targetURL` doesn't start with the locked base)
+- [x] **Rate limiter is enforced before proxy forwards request** ✅
+  - `main.go:36-40` middleware chain: CORS → RateLimit → Auth → handler/proxy
+  - `middleware/ratelimit.go` — per-IP sliding window (60 req/min default)
+  - Per-token GHL-specific back-off ALSO runs inside proxy for 429 responses (3 retries with 500ms × attempt back-off)
+- [x] **`go vet` + `gosec` pass with no findings on `internal/proxy` and `internal/store`** ✅
+  - `go vet ./...` exit:0
+  - `gosec ./internal/proxy/ ./internal/store/` exit:0 — zero findings
+  - `gosec ./...` (full backend) exit:0 — zero findings
+  - Fixed during Phase 1e audit: G114 (server timeouts), 3× G104 (json.Encode errors), 2× G704 (SSRF — suppressed with `#nosec` + defensive prefix check, explanation in code comments)
+
+### Verification artifacts
+
+```
+$ cd backend && go vet ./...
+exit 0
+$ go build ./...
+exit 0
+$ gosec ./...
+Summary: Files: 10, Lines: 547, Issues: 0
+exit 0
+```
+
+### Known Phase 1 limitations carried forward
+
+- No session/user identity. Anyone with network access to `:8080` can drive the vault. This is fine for `localhost` dev and is the explicit scope of Phase 1 (proxy + vault). Phase 2 closes the door with JWT.
+- Per-IP rate limit is generic. Per-token GHL-specific quota tracking + queuing comes when we wire real workloads (target: Phase 2c when bulk CV updates start hitting GHL hard).

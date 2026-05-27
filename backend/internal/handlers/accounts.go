@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/ipagoagaNNN/nnn-ghl-manager/backend/internal/store"
@@ -18,9 +19,11 @@ func ListAccounts(vault *store.Vault) http.HandlerFunc {
 			ids = append(ids, id)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"configuredLocations": ids,
 			"count":               len(ids),
-		})
+		}); err != nil {
+			log.Printf("accounts: encode response error: %v", err)
+		}
 	}
 }

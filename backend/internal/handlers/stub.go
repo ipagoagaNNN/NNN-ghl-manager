@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/ipagoagaNNN/nnn-ghl-manager/backend/internal/store"
@@ -13,7 +14,9 @@ import (
 func stub(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "not_yet_implemented", "handler": name})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "not_yet_implemented", "handler": name}); err != nil {
+			log.Printf("stub[%s]: encode error: %v", name, err)
+		}
 	}
 }
 

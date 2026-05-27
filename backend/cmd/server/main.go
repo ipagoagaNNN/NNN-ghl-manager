@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/ipagoagaNNN/nnn-ghl-manager/backend/internal/handlers"
 	"github.com/ipagoagaNNN/nnn-ghl-manager/backend/internal/middleware"
@@ -39,8 +40,17 @@ func main() {
 		middleware.Auth, // no-op until Phase 2
 	)
 
+	srv := &http.Server{
+		Addr:              ":8080",
+		Handler:           h,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      35 * time.Second, // 30s upstream + 5s margin
+		IdleTimeout:       60 * time.Second,
+	}
+
 	log.Println("NNN-GHL-Manager backend listening on :8080")
-	if err := http.ListenAndServe(":8080", h); err != nil {
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

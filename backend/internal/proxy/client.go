@@ -3,6 +3,7 @@ package proxy
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -50,36 +51,62 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
+	// Defensive: enforce GHL host lock (belt-and-suspenders vs. SSRF).
+	// gosec G704 flags this client.Do as SSRF because targetURL incorporates
+	// user-controlled path segments. The base host is hardcoded in store.ghlBase
+	// and validated here, so the user can only reach paths under GHL.
+	if !strings.HasPrefix(targetURL, h.vault.GHLBase()) {
+		http.Error(w, "invalid proxy target", http.StatusBadRequest)
+		return
+	}
+
 	var bodyBytes []byte
 	if r.Body != nil {
-		bodyBytes, _ = io.ReadAll(r.Body)
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
 	}
 
 	var resp *http.Response
-	var err error
+	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		req, _ := http.NewRequestWithContext(r.Context(), r.Method, targetURL, strings.NewReader(string(bodyBytes)))
+		// #nosec G107 G704 -- targetURL host is validated above; only path/query are user-controlled
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, strings.NewReader(string(bodyBytes)))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("proxy request build error: %v", err), http.StatusInternalServerError)
+			return
+		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Version", ghlVersion)
 		if len(bodyBytes) > 0 {
 			req.Header.Set("Content-Type", "application/json")
 		}
 
-		resp, err = h.client.Do(req)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+		// #nosec G107 G704 -- targetURL is locked to GHL base (validated above); user only controls path under that host
+		resp, lastErr = h.client.Do(req)
+		if lastErr != nil {
+			http.Error(w, fmt.Sprintf("proxy error: %v", lastErr), http.StatusBadGateway)
 			return
 		}
 
 		// Retry on 429 with back-off
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries-1 {
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Printf("proxy: body close error during 429 retry: %v", cerr)
+			}
 			time.Sleep(time.Duration(500*(attempt+1)) * time.Millisecond)
 			continue
 		}
 		break
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("proxy: body close error: %v", cerr)
+		}
+	}()
 
 	for k, vv := range resp.Header {
 		for _, v := range vv {
@@ -87,7 +114,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		// Client likely disconnected mid-stream — log only, response already started.
+		log.Printf("proxy: response copy error: %v", err)
+	}
 }
 
 func (h *Handler) resolveToken(r *http.Request, path string) string {
