@@ -23,6 +23,8 @@ func main() {
 
 	// Module routes
 	mux.HandleFunc("GET /api/accounts", handlers.ListAccounts(vault))
+	mux.HandleFunc("GET /api/accounts/library", handlers.ListLibrary(vault))
+	mux.HandleFunc("PUT /api/accounts/{locationId}/meta", handlers.UpdateLocMeta(vault))
 	mux.HandleFunc("GET /api/cv", handlers.ListCV(vault))
 	mux.HandleFunc("POST /api/cv/bulk", handlers.BulkUpdateCV(vault))
 	mux.HandleFunc("GET /api/workflows/{locationId}", handlers.ListWorkflows(vault))
@@ -41,7 +43,7 @@ func main() {
 	)
 
 	srv := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":8091",
 		Handler:           h,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -49,7 +51,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Println("NNN-GHL-Manager backend listening on :8080")
+	log.Println("NNN-GHL-Manager backend listening on :8091 (8080+8090+9090 reserved by Docker on Iker's machine)")
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

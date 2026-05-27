@@ -18,11 +18,11 @@ type Vault struct {
 }
 
 type LocMeta struct {
-	Name        string
-	Domain      string
-	AcuityField string
-	CalendarIDs string
-	Active      bool
+	Name        string `json:"name"`
+	Domain      string `json:"domain"`
+	AcuityField string `json:"acuityField"`
+	CalendarIDs string `json:"calendarIds"`
+	Active      bool   `json:"active"`
 }
 
 func NewVault() *Vault {
@@ -72,6 +72,34 @@ func (v *Vault) AllLocTokens() map[string]string {
 	out := make(map[string]string, len(v.locTokens))
 	for k, tok := range v.locTokens {
 		out[k] = tok
+	}
+	return out
+}
+
+// SetLocMeta upserts the location metadata (domain, acuity field, calendar IDs, active flag).
+// Token is NOT included here — tokens are written exclusively via SetLocToken.
+func (v *Vault) SetLocMeta(locationID string, meta LocMeta) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.locMeta[locationID] = meta
+}
+
+// LocMeta returns the metadata for a single location.
+func (v *Vault) LocMetaFor(locationID string) (LocMeta, bool) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	m, ok := v.locMeta[locationID]
+	return m, ok
+}
+
+// AllLocMeta returns a snapshot copy of all per-location metadata.
+// The returned map does NOT include tokens — those stay in locTokens.
+func (v *Vault) AllLocMeta() map[string]LocMeta {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	out := make(map[string]LocMeta, len(v.locMeta))
+	for k, m := range v.locMeta {
+		out[k] = m
 	}
 	return out
 }

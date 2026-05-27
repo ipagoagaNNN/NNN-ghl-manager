@@ -134,6 +134,7 @@ Meta Pixel IDs are hardcoded in the HTML. Not a security issue per se, but they 
   - `middleware/cors.go` allow-list: `http://localhost:5173`, `http://localhost:4173` (Vite preview)
   - `Access-Control-Allow-Origin` only set if origin is in the list — no wildcard
   - Production domain to be added at Phase 4 deploy time
+  - **Note**: Backend listens on `:8091` (8080, 8090, 9090 all reserved by Docker on Iker's dev machine — see `com.docker.backend.exe` netstat). Vite proxy forwards `/api/*` from `:5173` → `:8091`. CORS allow-list is independent of backend port. Rust workers use `:8081` + `:8082`.
 - [x] **GHL base URL is not configurable from frontend (hardcoded in proxy)** ✅
   - `store/vault.go:8` — `const ghlBase = "https://services.leadconnectorhq.com"`
   - No env var, no config file, no API endpoint to mutate
