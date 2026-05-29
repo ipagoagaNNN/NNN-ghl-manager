@@ -20,9 +20,7 @@ func stub(name string) http.HandlerFunc {
 	}
 }
 
-func ListCV(vault *store.Vault) http.HandlerFunc       { return stub("ListCV") }
-func BulkUpdateCV(vault *store.Vault) http.HandlerFunc { return stub("BulkUpdateCV") }
-func ListFunnels(vault *store.Vault) http.HandlerFunc  { return stub("ListFunnels") }
-func UpdateFunnelPage(vault *store.Vault) http.HandlerFunc { return stub("UpdateFunnelPage") }
-func DashboardContacts(vault *store.Vault) http.HandlerFunc { return stub("DashboardContacts") }
+func ListFunnels(vault *store.Vault) http.HandlerFunc         { return stub("ListFunnels") }
+func UpdateFunnelPage(vault *store.Vault) http.HandlerFunc     { return stub("UpdateFunnelPage") }
+func DashboardContacts(vault *store.Vault) http.HandlerFunc    { return stub("DashboardContacts") }
 func UpdateNumbersLibrary(vault *store.Vault) http.HandlerFunc { return stub("UpdateNumbersLibrary") }
