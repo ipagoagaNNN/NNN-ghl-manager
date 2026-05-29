@@ -18,7 +18,8 @@ func main() {
 	mux := http.NewServeMux()
 
 	// Auth routes (no-op middleware until Phase 2)
-	mux.HandleFunc("POST /api/connect", handlers.Connect(vault))
+	mux.HandleFunc("POST /api/connect", handlers.Connect(vault))                  // agency-level PIT → list sub-accounts
+	mux.HandleFunc("POST /api/connect/location", handlers.ConnectLocation(vault)) // location-scoped PIT → single sub-account
 	mux.HandleFunc("POST /api/tokens/{locationId}", handlers.SaveToken(vault))
 
 	// Module routes
