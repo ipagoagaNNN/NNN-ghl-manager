@@ -133,13 +133,14 @@
 	}
 
 	async function applyChanges() {
-		const updates: { locationId: string; customValueId: string; value: string }[] = [];
+		const updates: { locationId: string; customValueId: string; name: string; value: string }[] = [];
 		for (const loc of locations) {
 			const map = pending[loc.locationId];
 			if (!map) continue;
 			for (const cv of loc.cvs) {
 				if (map[cv.id] !== undefined && map[cv.id] !== cv.value) {
-					updates.push({ locationId: loc.locationId, customValueId: cv.id, value: map[cv.id] });
+					// Send name alongside value — GHL PUT needs it (matches prototype).
+					updates.push({ locationId: loc.locationId, customValueId: cv.id, name: cv.name, value: map[cv.id] });
 				}
 			}
 		}

@@ -78,17 +78,31 @@ func ListWorkflows(vault *store.Vault) http.HandlerFunc {
 
 		var data struct {
 			Workflows []workflow `json:"workflows"`
+			Data      []workflow `json:"data"`
+			List      []workflow `json:"list"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			http.Error(w, fmt.Sprintf("decode error: %v", err), http.StatusBadGateway)
 			return
 		}
+		// GHL has returned this list under different envelope keys across API
+		// versions; mirror the prototype's workflows||data||list fallback.
+		wfs := data.Workflows
+		if len(wfs) == 0 {
+			wfs = data.Data
+		}
+		if len(wfs) == 0 {
+			wfs = data.List
+		}
+		if wfs == nil {
+			wfs = []workflow{}
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"locationId": locationID,
-			"workflows":  data.Workflows,
-			"count":      len(data.Workflows),
+			"workflows":  wfs,
+			"count":      len(wfs),
 		}); err != nil {
 			log.Printf("workflows: encode response error: %v", err)
 		}

@@ -62,9 +62,10 @@
 		loading = true;
 		error = '';
 		try {
+			// Send raw YYYY-MM-DD; backend filters server-side by date prefix.
 			const qs = new URLSearchParams();
-			if (startDate) qs.set('startDate', new Date(startDate).toISOString());
-			if (endDate) qs.set('endDate', new Date(endDate).toISOString());
+			if (startDate) qs.set('startDate', startDate);
+			if (endDate) qs.set('endDate', endDate);
 			const suffix = qs.toString() ? `?${qs.toString()}` : '';
 
 			const settled = await Promise.allSettled(

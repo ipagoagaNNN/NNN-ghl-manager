@@ -129,19 +129,30 @@ func fetchCustomValues(r *http.Request, client *http.Client, token, locationID s
 
 	var data struct {
 		CustomValues []cvItem `json:"customValues"`
+		CustomValue  []cvItem `json:"customValue"`
+		Data         []cvItem `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
-	if data.CustomValues == nil {
-		data.CustomValues = []cvItem{}
+	// Mirror prototype's customValues||customValue||data fallback.
+	cvs := data.CustomValues
+	if len(cvs) == 0 {
+		cvs = data.CustomValue
 	}
-	return data.CustomValues, nil
+	if len(cvs) == 0 {
+		cvs = data.Data
+	}
+	if cvs == nil {
+		cvs = []cvItem{}
+	}
+	return cvs, nil
 }
 
 type cvUpdate struct {
 	LocationID    string `json:"locationId"`
 	CustomValueID string `json:"customValueId"`
+	Name          string `json:"name"` // GHL PUT requires name alongside value (prototype line 6494)
 	Value         string `json:"value"`
 }
 
@@ -231,7 +242,13 @@ func putCustomValue(r *http.Request, client *http.Client, token string, upd cvUp
 		return fmt.Errorf("invalid GHL target")
 	}
 
-	payload, err := json.Marshal(map[string]string{"value": upd.Value})
+	// Prototype sends { name, value } on every PUT (lines 6494/6982/8936). Omitting
+	// name risks GHL clearing it, so include it whenever the caller supplied one.
+	body := map[string]string{"value": upd.Value}
+	if upd.Name != "" {
+		body["name"] = upd.Name
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
