@@ -20,6 +20,10 @@ func stub(name string) http.HandlerFunc {
 	}
 }
 
-func ListFunnels(vault *store.Vault) http.HandlerFunc         { return stub("ListFunnels") }
+// ListFunnels is implemented in funnels.go (Phase 2e-1, read + audit).
+// UpdateFunnelPage stays a stub: GHL's public API v2 has no funnel/page write
+// endpoint, so pixel/head-code injection via a location PIT is not possible.
+// Phase 2e-2 (deferred, pending user decision) covers the write story — see
+// docs/funnels/verified-implementation-path.md §2e-2.
 func UpdateFunnelPage(vault *store.Vault) http.HandlerFunc     { return stub("UpdateFunnelPage") }
 func UpdateNumbersLibrary(vault *store.Vault) http.HandlerFunc { return stub("UpdateNumbersLibrary") }

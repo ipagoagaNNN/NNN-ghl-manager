@@ -30,6 +30,7 @@ func main() {
 	mux.HandleFunc("POST /api/cv/bulk", handlers.BulkUpdateCV(vault))
 	mux.HandleFunc("GET /api/workflows/{locationId}", handlers.ListWorkflows(vault))
 	mux.HandleFunc("GET /api/funnels/{locationId}", handlers.ListFunnels(vault))
+	mux.HandleFunc("GET /api/funnels/{locationId}/audit", handlers.AuditFunnels(vault))
 	mux.HandleFunc("PUT /api/funnels/page/{pageId}", handlers.UpdateFunnelPage(vault))
 	mux.HandleFunc("GET /api/dashboard/{locationId}/contacts", handlers.DashboardContacts(vault))
 	mux.HandleFunc("POST /api/numbers/library", handlers.UpdateNumbersLibrary(vault))
