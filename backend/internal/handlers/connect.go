@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -141,23 +140,34 @@ func ConnectLocation(vault *store.Vault) http.HandlerFunc {
 			return
 		}
 
-		// Validate with a cheap location-scoped call. A location PIT returns 200
-		// here; an invalid/wrong-scope token returns 401/403.
-		if err := validateLocationToken(r, client, req.Token, req.LocationID); err != nil {
+		// Validate the token AND fetch the custom values in one call: a location PIT
+		// returns 200 here, and the CVs let us resolve a friendly account name (GHL
+		// exposes it as the "Location Name" custom value) instead of showing the raw id.
+		cvs, err := fetchCustomValues(r, client, req.Token, req.LocationID)
+		if err != nil {
 			http.Error(w, fmt.Sprintf("token validation failed: %v", err), http.StatusUnauthorized)
 			return
 		}
 
 		vault.SetLocToken(req.LocationID, req.Token)
-		if _, ok := vault.LocMetaFor(req.LocationID); !ok {
-			// Seed minimal metadata — user can rename on the Accounts page.
-			vault.SetLocMeta(req.LocationID, store.LocMeta{Name: req.LocationID, Active: true})
+
+		name := req.LocationID
+		if n := extractLocationName(cvs); n != "" {
+			name = n
+		}
+		// Store the resolved name, upgrading a placeholder (id) name but never
+		// clobbering a name the user set on the Accounts page.
+		if meta, ok := vault.LocMetaFor(req.LocationID); !ok {
+			vault.SetLocMeta(req.LocationID, store.LocMeta{Name: name, Active: true})
+		} else if meta.Name == "" || meta.Name == req.LocationID {
+			meta.Name = name
+			vault.SetLocMeta(req.LocationID, meta)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(connectLocationResponse{
 			LocationID: req.LocationID,
-			Name:       req.LocationID,
+			Name:       name,
 			Valid:      true,
 		}); err != nil {
 			log.Printf("connect location: encode error: %v", err)
@@ -165,37 +175,20 @@ func ConnectLocation(vault *store.Vault) http.HandlerFunc {
 	}
 }
 
-func validateLocationToken(r *http.Request, client *http.Client, token, locationID string) error {
-	base := store.GHLBase()
-	target := fmt.Sprintf("%s/locations/%s/customValues", base, url.PathEscape(locationID))
-	if !strings.HasPrefix(target, base) {
-		return fmt.Errorf("invalid GHL target")
-	}
-
-	// #nosec G107 G704 -- base host hardcoded + validated; only escaped locationId varies
-	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Version", store.VersionCustomValues) // validation hits /customValues
-
-	// #nosec G107 G704 -- see above
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			log.Printf("connect location: body close error: %v", cerr)
+// extractLocationName returns a friendly account name from the location's custom
+// values — GHL exposes it as the "Location Name" custom value (key
+// custom_values.location_name). Empty if none is set; the caller falls back to
+// the locationId.
+func extractLocationName(cvs []cvItem) string {
+	for _, cv := range cvs {
+		switch strings.ToLower(strings.TrimSpace(cv.Name)) {
+		case "location name", "location_name", "account name", "business name":
+			if v := strings.TrimSpace(cv.Value); v != "" {
+				return v
+			}
 		}
-	}()
-
-	if !isOK(resp.StatusCode) {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(b), 120))
 	}
-	return nil
+	return ""
 }
 
 // SaveToken stores a sub-account token server-side.

@@ -1,4 +1,4 @@
-# NNN-GHL-manager → [W]-OS CRM Platform: Architecture Verification, Migration & Claude Shell
+# NNN-GHL-manager → CRM + CMS Platform: Architecture Verification, Migration & Claude Shell
 
 > **Status — accepted as a reference architecture / starting point (2026-05-29). NOT scheduled for implementation.**
 > Owner direction: keep this as a durable design doc; write **no code** and make **no roadmap/file edits** yet.
@@ -179,7 +179,7 @@ Because GHL funnel-page write is impossible, the CMS becomes the **system of rec
 
 **Shared core `backend/internal/shellcore/`** — calls the backend **HTTP API** (not Neon/NATS directly). Rationale: kill-switch + outbox + auth already live behind the API (a disabled adapter stays disabled for Claude too); ADR-001 holds (shell carries at most a *service JWT*, never an integration token); business logic isn't duplicated. A `WithReadDB(dsn)` **read-only** seam is designed-in but deferred (trigger: a tool needs >5k rows / multi-table aggregate).
 
-**MCP server `cmd/ghl-mcp/main.go`** — vigil-style (copy `my-vigil/cmd/vigil/main.go`: hand-rolled JSON-RPC over stdio, ~170-line loop; typed `ToolDef` **+ a `Category` field**; `internal/mcp/tools/{toollist,dispatch,core}.go`; walk-up `.ghl_config.json`; **`configure` tool day one** storing the token *env-var name*, never the value; schema-driven vault cache copying `my-vigil/internal/vault/writer.go`). **Avoid** session-mcp's 895-line fat main.
+**MCP server `cmd/ghl-mcp/main.go`** — hand-rolled JSON-RPC over stdio (~170-line loop); typed `ToolDef` **+ a `Category` field**; `internal/mcp/tools/{toollist,dispatch,core}.go`; walk-up `.ghl_config.json`; **`configure` tool day one** storing the token *env-var name*, never the value; a schema-driven vault cache. Keep `main.go` thin — the dispatch logic lives in `internal/mcp/`.
 
 **Tool surface (21 tools / 7 categories):** crm (`crm_contacts_query/contact_get/contact_cache/opportunities_query/pipelines_list/conversations_query`), sync (`sync_run/state/dlq_depth/dlq_peek/replay_event`), integrations (`integrations_list/integration_health/integration_toggle`), cms (`cms_pages_list/page_get/publish`), dialer (`dialer_number_match`), observability (`system_status/recent_errors`), config (`configure/ghl_help`). Each maps 1:1 to a `shellcore` method **and** a CLI subcommand.
 
@@ -194,8 +194,7 @@ go build -o bin\ghl-mcp.exe .\cmd\ghl-mcp
 go build -o bin\ghl.exe     .\cmd\ghl
 go vet .\...
 ```
-`//go:embed` the schema files into `ghl-mcp.exe`. Add to `C:\Users\get_h\AppData\Roaming\Claude\claude_desktop_config.json` under `mcpServers`: `"ghl-mcp": { "command": "…\\backend\\bin\\ghl-mcp.exe", "args": [], "env": { "GHL_SHELL_TOKEN": "…" } }`. Full Claude Desktop restart to pick it up. Optional: emit `vigil_emit_signal` after high-consequence actions, gated behind `cfg.EmitVigilSignals` (default false).
-
+`//go:embed` the schema files into `ghl-mcp.exe`. Add to `C:\Users\get_h\AppData\Roaming\Claude\claude_desktop_config.json` under `mcpServers`: `"ghl-mcp": { "command": "…\\backend\\bin\\ghl-mcp.exe", "args": [], "env": { "GHL_SHELL_TOKEN": "…" } }`. Full Claude Desktop restart to pick it up.
 ---
 
 ## Part 7 — Roadmap modification (primary deliverable)
@@ -264,5 +263,5 @@ Currently empty. On execution, write: **ADR-001** Go proxy / tokens server-side 
 - `backend/internal/proxy/client.go` — hot-path token read (stays unchanged) + the host-lock/429 core lifted into `httpbase`.
 - `backend/internal/handlers/funnels.go` — SSRF guard to lift; `AuditFunnels` becomes the CMS post-publish verifier.
 - `…/NNN-HF-Obsidian/auth-server/main.go` + `migrations/008_attachments.sql` — pgx pool + embedded-migration runner + state-machine/partial-index templates to copy.
-- `…/Vigil-AF/my-vigil/cmd/vigil/main.go`, `internal/tools/toollist.go`, `internal/vault/writer.go` — MCP loop, typed ToolDef, schema-driven writer to copy for the shell.
+- _(Claude-shell scaffolding is self-contained in `cmd/ghl-mcp` + `internal/mcp`; no external code dependencies.)_
 - `roadmap/_roadmap.md` + `decisions/` — the roadmap rewrite (Part 7) and ADRs (Part 8).

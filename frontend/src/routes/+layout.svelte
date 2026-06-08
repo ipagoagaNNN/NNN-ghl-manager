@@ -15,6 +15,7 @@
 		{ href: '/automations', label: 'Automations', icon: '⚙️' },
 		{ href: '/dashboard', label: 'Dashboard', icon: '📊' },
 		{ href: '/dialers', label: 'Dialers', icon: '📞' },
+		{ href: '/help', label: 'Help', icon: '📖' },
 	] as const;
 
 	onMount(() => {

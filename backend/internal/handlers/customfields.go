@@ -12,11 +12,11 @@ import (
 )
 
 type customField struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	DataType string `json:"dataType,omitempty"`
-	FieldKey string `json:"fieldKey,omitempty"`
-	Position int    `json:"position,omitempty"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	DataType string  `json:"dataType,omitempty"`
+	FieldKey string  `json:"fieldKey,omitempty"`
+	Position float64 `json:"position,omitempty"` // GHL returns fractional positions (e.g. 281.25), not ints
 }
 
 // ListCustomFields returns a location's custom-field schema
