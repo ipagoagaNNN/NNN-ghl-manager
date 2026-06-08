@@ -4,7 +4,7 @@
 	import { session } from '$lib/stores/session.svelte.js';
 	import { apiGet } from '$lib/api/client.js';
 	import { accounts, loadLibrary } from '$lib/stores/accounts.svelte.js';
-	import { brandPixels, pixelSnippet, brandForDomain, ghlFunnelsURL } from '$lib/data/pixel-snippets.js';
+	import { brandPixels, pixelSnippet, brandForDomain, ghlFunnelsURL, ghlFunnelURL } from '$lib/data/pixel-snippets.js';
 
 	interface FunnelStep {
 		name: string;
@@ -31,6 +31,8 @@
 		fetchOk: boolean;
 		hasPixel: boolean;
 		pixelId: string;
+		pixelCount: number;
+		duplicate: boolean;
 		expectedPixel?: string;
 		pixelStatus: 'ok' | 'missing' | 'wrong-pixel' | 'unknown-domain' | 'no-url';
 		hasUtm: boolean;
@@ -43,6 +45,7 @@
 		ok: number;
 		missing: number;
 		wrong: number;
+		duplicate: number;
 		errors: number;
 	}
 	interface AuditResponse {
@@ -182,6 +185,55 @@
 			copiedId = '';
 		}
 	}
+
+	// --- Verify after paste (#1): re-audit one funnel fresh (cache-bust) ---
+	let verifying = $state<Record<string, boolean>>({});
+	let verifyMsg = $state<Record<string, { ok: boolean; text: string }>>({});
+
+	async function verifyFunnel(locId: string, funnel: Funnel) {
+		verifying = { ...verifying, [funnel.id]: true };
+		verifyMsg = { ...verifyMsg, [funnel.id]: { ok: false, text: '' } };
+		try {
+			const data = await apiGet<AuditResponse>(
+				`/api/funnels/${encodeURIComponent(locId)}/audit?funnelId=${encodeURIComponent(funnel.id)}&fresh=1`
+			);
+			const cur = audits[locId] ?? { loading: false, error: '', byUrl: {}, summary: null };
+			const byUrl = { ...cur.byUrl };
+			for (const p of data.pages) byUrl[p.url] = p;
+			audits[locId] = { ...cur, byUrl };
+			const probs = data.pages.filter(
+				(p) => p.pixelStatus === 'missing' || p.pixelStatus === 'wrong-pixel' || p.duplicate
+			);
+			verifyMsg = {
+				...verifyMsg,
+				[funnel.id]:
+					probs.length === 0
+						? { ok: true, text: '✓ pixel verified on all pages' }
+						: { ok: false, text: `✗ ${probs.length} page(s) still need fixing` }
+			};
+		} catch (e) {
+			verifyMsg = {
+				...verifyMsg,
+				[funnel.id]: { ok: false, text: e instanceof Error ? e.message : 'Verify failed' }
+			};
+		} finally {
+			verifying = { ...verifying, [funnel.id]: false };
+		}
+	}
+
+	// funnelNeedsFix (#2): show the fix panel when the funnel has no tracking pixel
+	// OR any of its live pages are missing / wrong / duplicate.
+	function funnelNeedsFix(funnel: Funnel, as: AuditState | undefined): boolean {
+		if (!funnel.hasTrackingPixel) return true;
+		if (!as) return false;
+		for (const step of funnel.steps) {
+			const a = as.byUrl[step.url];
+			if (a && (a.pixelStatus === 'missing' || a.pixelStatus === 'wrong-pixel' || a.duplicate)) {
+				return true;
+			}
+		}
+		return false;
+	}
 </script>
 
 <div class="page">
@@ -231,6 +283,7 @@
 						<span class="sb ok">{as.summary.ok} ok</span>
 						<span class="sb miss">{as.summary.missing} missing</span>
 						<span class="sb wrong">{as.summary.wrong} wrong</span>
+						{#if as.summary.duplicate > 0}<span class="sb dup">{as.summary.duplicate} dup</span>{/if}
 						{#if as.summary.errors > 0}<span class="sb err">{as.summary.errors} err</span>{/if}
 					</span>
 				{/if}
@@ -281,6 +334,7 @@
 											{#if audit.fetchOk}
 												<span class="mini" class:on={audit.hasUtm}>UTM</span>
 												<span class="mini" class:on={audit.hasAcuity}>Acuity</span>
+												{#if audit.duplicate}<span class="mini dup on">⚠ {audit.pixelCount}× pixel</span>{/if}
 											{/if}
 										{/if}
 									</li>
@@ -288,10 +342,10 @@
 							</ul>
 						{/if}
 
-						{#if !funnel.hasTrackingPixel}
+						{#if funnelNeedsFix(funnel, as)}
 							<div class="fix">
 								<button class="fix-toggle" onclick={() => toggleFix(funnel)}>
-									{fixOpen[funnel.id] ? '▾' : '▸'} Add Meta pixel to this funnel
+									{fixOpen[funnel.id] ? '▾' : '▸'} Add or fix the Meta pixel
 								</button>
 								{#if fixOpen[funnel.id]}
 									<div class="fix-body">
@@ -315,12 +369,18 @@
 												<button class="btn-primary sm" onclick={() => copySnippet(funnel.id, fixBrand[funnel.id])}>
 													{copiedId === funnel.id ? 'Copied!' : 'Copy snippet'}
 												</button>
-												<a class="ghl-link" href={ghlFunnelsURL(target.locationId)} target="_blank" rel="noopener noreferrer">
-													Open funnels in GHL ↗
+												<a class="ghl-link" href={ghlFunnelURL(target.locationId, funnel.id)} target="_blank" rel="noopener noreferrer">
+													Open this funnel in GHL ↗
 												</a>
+												<button class="btn-secondary sm" onclick={() => verifyFunnel(target.locationId, funnel)} disabled={verifying[funnel.id]}>
+													{verifying[funnel.id] ? 'Verifying…' : 'Verify'}
+												</button>
+												{#if verifyMsg[funnel.id]?.text}
+													<span class="verify-msg" class:ok={verifyMsg[funnel.id]?.ok}>{verifyMsg[funnel.id]?.text}</span>
+												{/if}
 											</div>
 											<p class="fix-hint">
-												Paste into GHL → Funnels → {funnel.name} → Settings → Tracking Code (Head), then Save.
+												Paste into GHL → Funnels → {funnel.name} → Settings → Tracking Code (Head) — replace any existing pixel — then Save &amp; Publish. Then click <strong>Verify</strong> above to confirm.
 											</p>
 										{/if}
 									</div>
@@ -440,4 +500,9 @@
 	.ghl-link { font-size: 12px; font-weight: 600; color: var(--accent); text-decoration: none; }
 	.ghl-link:hover { text-decoration: underline; }
 	.fix-hint { font-size: 11.5px; color: var(--text2); line-height: 1.4; }
+	.sb.dup { background: rgba(255,149,0,0.2); color: #9a4d00; }
+	.mini.dup.on { background: rgba(255,149,0,0.16); color: #b25e00; opacity: 1; }
+	.btn-secondary.sm { padding: 6px 14px; font-size: 12px; }
+	.verify-msg { font-size: 12px; font-weight: 600; color: var(--error); }
+	.verify-msg.ok { color: var(--success); }
 </style>

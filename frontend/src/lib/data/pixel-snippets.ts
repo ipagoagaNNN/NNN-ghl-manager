@@ -58,3 +58,9 @@ export function brandForDomain(domain: string): BrandPixel | undefined {
 export function ghlFunnelsURL(locationId: string): string {
 	return `https://app.gohighlevel.com/v2/location/${encodeURIComponent(locationId)}/funnels-websites/funnels`;
 }
+
+// ghlFunnelURL deep-links to one specific funnel (fewer clicks to its settings).
+// Best-effort path on the GHL app v2 layout; degrades to the funnels list.
+export function ghlFunnelURL(locationId: string, funnelId: string): string {
+	return `${ghlFunnelsURL(locationId)}/${encodeURIComponent(funnelId)}`;
+}

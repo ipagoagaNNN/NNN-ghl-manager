@@ -194,7 +194,7 @@ func ListFunnels(vault *store.Vault) http.HandlerFunc {
 					URL:  buildStepURL(s.slug(), domain),
 				})
 			}
-			hasPixel, pixelID, _, _ := auditHTML(f.funnelTrackingCode())
+			hasPixel, pixelID, _, _, _ := auditHTML(f.funnelTrackingCode())
 			out = append(out, funnelOut{
 				ID:               f.id(),
 				Name:             f.name(),
@@ -225,6 +225,8 @@ type pageAudit struct {
 	FetchOK       bool   `json:"fetchOk"`
 	HasPixel      bool   `json:"hasPixel"`
 	PixelID       string `json:"pixelId"`
+	PixelCount    int    `json:"pixelCount"`
+	Duplicate     bool   `json:"duplicate"`
 	ExpectedPixel string `json:"expectedPixel,omitempty"`
 	PixelStatus   string `json:"pixelStatus"` // ok | missing | wrong-pixel | unknown-domain | no-url
 	HasUTM        bool   `json:"hasUtm"`
@@ -233,12 +235,13 @@ type pageAudit struct {
 }
 
 type auditSummary struct {
-	Funnels int `json:"funnels"`
-	Pages   int `json:"pages"`
-	OK      int `json:"ok"`
-	Missing int `json:"missing"`
-	Wrong   int `json:"wrong"`
-	Errors  int `json:"errors"`
+	Funnels   int `json:"funnels"`
+	Pages     int `json:"pages"`
+	OK        int `json:"ok"`
+	Missing   int `json:"missing"`
+	Wrong     int `json:"wrong"`
+	Duplicate int `json:"duplicate"`
+	Errors    int `json:"errors"`
 }
 
 type auditResponse struct {
@@ -283,16 +286,21 @@ func AuditFunnels(vault *store.Vault) http.HandlerFunc {
 			return
 		}
 		funnelID := strings.TrimSpace(r.URL.Query().Get("funnelId"))
+		// ?fresh=1 bypasses the 60s cache — used by the per-funnel "Verify" button
+		// right after the operator pastes + publishes, so they see the result now.
+		fresh := r.URL.Query().Get("fresh") == "1" || r.URL.Query().Get("fresh") == "true"
 		cacheKey := locationID + "|" + funnelID
 
-		cacheMu.Lock()
-		if ent, ok := cache[cacheKey]; ok && time.Since(ent.at) < funnelAuditCacheTTL {
-			resp := ent.resp
+		if !fresh {
+			cacheMu.Lock()
+			if ent, ok := cache[cacheKey]; ok && time.Since(ent.at) < funnelAuditCacheTTL {
+				resp := ent.resp
+				cacheMu.Unlock()
+				writeJSON(w, resp)
+				return
+			}
 			cacheMu.Unlock()
-			writeJSON(w, resp)
-			return
 		}
-		cacheMu.Unlock()
 
 		token, ok := vault.LocToken(locationID)
 		if !ok || token == "" {
@@ -384,7 +392,8 @@ func auditOnePage(ctx context.Context, client *http.Client, funnel, step, pageUR
 		return pa
 	}
 	pa.FetchOK = true
-	pa.HasPixel, pa.PixelID, pa.HasUTM, pa.HasAcuity = auditHTML(html)
+	pa.HasPixel, pa.PixelID, pa.PixelCount, pa.HasUTM, pa.HasAcuity = auditHTML(html)
+	pa.Duplicate = pa.PixelCount > 1
 
 	switch {
 	case !known:
@@ -402,6 +411,9 @@ func auditOnePage(ctx context.Context, client *http.Client, funnel, step, pageUR
 func summarize(funnelCount int, results []pageAudit) auditSummary {
 	s := auditSummary{Funnels: funnelCount, Pages: len(results)}
 	for _, r := range results {
+		if r.Duplicate {
+			s.Duplicate++
+		}
 		switch r.PixelStatus {
 		case "ok":
 			s.OK++
@@ -598,14 +610,17 @@ func isPublicIP(ip net.IP) bool {
 
 var reFbqInit = regexp.MustCompile(`fbq\(\s*['"]init['"]\s*,\s*['"]?(\d+)['"]?`)
 
-// auditHTML detects the Meta pixel, UTM tracking script, and Acuity footer in a
+// auditHTML detects the Meta pixel(s), UTM tracking script, and Acuity footer in a
 // page's HTML, mirroring the prototype's extractTrackingScanDetails (HTML L2863).
-func auditHTML(html string) (hasPixel bool, pixelID string, hasUTM, hasAcuity bool) {
+// pixelCount is the number of fbq('init', …) calls — >1 means a duplicate pixel,
+// which double-counts conversions.
+func auditHTML(html string) (hasPixel bool, pixelID string, pixelCount int, hasUTM, hasAcuity bool) {
 	hasPixel = strings.Contains(html, "fbq(") ||
 		strings.Contains(html, "fbevents.js") ||
 		strings.Contains(html, "Meta Pixel")
-	if m := reFbqInit.FindStringSubmatch(html); m != nil {
-		pixelID = m[1]
+	if m := reFbqInit.FindAllStringSubmatch(html, -1); len(m) > 0 {
+		pixelCount = len(m)
+		pixelID = m[0][1]
 	}
 	hasUTM = strings.Contains(html, "user_ip_address") ||
 		strings.Contains(html, "full_url_utm") ||
@@ -615,7 +630,7 @@ func auditHTML(html string) (hasPixel bool, pixelID string, hasUTM, hasAcuity bo
 	hasAcuity = strings.Contains(html, "ACUITY_FIELD_ID") ||
 		strings.Contains(html, "acuityscheduling.com") ||
 		strings.Contains(html, "MARKETING DATA TRACKER")
-	return hasPixel, pixelID, hasUTM, hasAcuity
+	return hasPixel, pixelID, pixelCount, hasUTM, hasAcuity
 }
 
 // buildStepURL mirrors the prototype's buildStepUrl (HTML L2816).

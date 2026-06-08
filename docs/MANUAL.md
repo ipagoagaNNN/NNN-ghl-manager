@@ -79,6 +79,7 @@ cd frontend ; npm run check                          # svelte-check
 Two ways to authenticate, both store the token server-side and return only non-secret data:
 - **Agency PIT** (`POST /api/connect`) → validates against `/locations/search`, lists all sub-accounts.
 - **Location PIT** (`POST /api/connect/location`) → for location-scoped tokens that 403 on agency search but 200 on location endpoints. Validates via `/customValues`, stores the token, makes the location usable everywhere.
+- **Friendly account name** ✅ — on connect, the name is read from the account's `Location Name` custom value (falls back to the location ID), so module titles show e.g. "Joli Visage Naples" instead of the raw id.
 - Status dot + sub-account count in the top bar.
 
 ### 4.2 Accounts ✅
@@ -102,8 +103,8 @@ Lists GHL **workflows** per account (`GET /api/workflows/{loc}`) — name, statu
 Leads analytics per sub-account: contacts paginated from GHL, aggregated **leads-by-day** (inline SVG chart, no chart dep), **top sources**, per-account table, date-range filter, explicit empty-state. Guards against GHL's unreliable `page` pagination (duplicate-page signature + `nextPageUrl` stop). Campaign breakdown + FB-attribution + converted/booked metrics are **available but not yet built** (need `customFields` name resolution — now provided by §4.4).
 
 ### 4.7 Sites & Funnels ◐
-- **Read + audit** ✅ — list funnels/pages, server-side fetch published pages (SSRF-guarded), detect Meta Pixel + UTM markers, per-page present/missing verdict vs the expected brand pixel.
-- **Assisted-manual pixel fix** ✅ — hands the operator the exact snippet + copy button + a GHL deep link to paste into Funnel → Settings → Tracking Code.
+- **Read + audit** ✅ — list funnels/pages, server-side fetch published pages (SSRF-guarded), detect Meta Pixel + UTM markers, per-page verdict (`ok` / `missing` / `wrong-pixel` / `unknown-domain`), plus **duplicate-pixel detection** (counts every `fbq('init')`; 2+ silently double-counts conversions). "Super Scan" audits every account at once.
+- **Assisted-manual pixel fix** ✅ — for any funnel with a pixel problem (missing *or* wrong *or* duplicate), hands the operator the exact brand snippet + copy button + a **deep link to that specific funnel** in GHL. After you paste + publish, a per-funnel **Verify** button re-audits the live page (cache-bust) and flips the badges green ✓ — closing the loop with no GHL write.
 - ⛔ **Automated pixel/page write is impossible** via the public API (no funnel/page write endpoint for PIT *or* OAuth). The prototype's auto-injection used a captured browser-session token — **rejected** (fragile, ToS-grey, raises the threat model). `PUT /api/funnels/page/{id}` is a deliberate `not_yet_implemented` stub. The real solution is the CMS (§8, Track E2).
 
 ### 4.8 Dialers — Numbers + Flagged ◐ (research-complete, not wired)
@@ -139,7 +140,7 @@ All under `http://localhost:8091`. Tokens are resolved server-side from the vaul
 | GET | `/api/objects/{loc}` | 2023-02-21 | Object schema (business/opportunity/contact + custom) |
 | GET | `/api/workflows/{loc}` | 2021-07-28 | List workflows (read-only) |
 | GET | `/api/funnels/{loc}` | 2021-07-28 | List funnels |
-| GET | `/api/funnels/{loc}/audit` | 2021-07-28 | Live-page pixel/UTM audit |
+| GET | `/api/funnels/{loc}/audit` | 2021-07-28 | Live-page pixel/UTM audit (`?funnelId=` scopes it; `?fresh=1` bypasses the 60s cache for Verify) |
 | PUT | `/api/funnels/page/{pageId}` | — | ⛔ `not_yet_implemented` (GHL write impossible) |
 | GET | `/api/dashboard/{loc}/contacts` | 2021-07-28 | Paginated contacts → leads analytics |
 | POST | `/api/numbers/library` | — | Dialer numbers library (stub) |
@@ -250,6 +251,12 @@ Per-module keep/kill via the kill switch, in spec order: Connect → Dialers →
 ---
 
 ## 11. Verification log
+
+**2026-06-08 (s6, cont.) — funnels assisted-flow + account name + in-app Help, verified live:**
+- **Funnels** — per-funnel **Verify** (`?fresh=1` cache-bust) confirmed; **duplicate-pixel** detection added (`pixelCount`/`duplicate` in the audit); the fix panel now opens for wrong/duplicate pixels (not just missing); deep-link to the specific funnel. 6 funnels / 12 pages audited live.
+- **Account name** — resolved from the `Location Name` custom value (e.g. "Him Valdivia") in the connect response + library.
+- **In-app Help** — `/help` renders this manual (single source); verified HTTP 200.
+- Build/CI: `go build` + `vet` + gosec clean · `svelte-check` 291/0/0.
 
 **2026-06-08 (s6) — live-verified against a connected account (`6KtnVX…`):**
 - `GET /api/customfields/{loc}` → **67 fields** ✅ — fixed a 502 (GHL returns `position` as a float like `281.25`; the struct now uses `float64`).
