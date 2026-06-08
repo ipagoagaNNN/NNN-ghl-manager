@@ -10,6 +10,7 @@
 		{ href: '/connect', label: 'Connect', icon: '⚡' },
 		{ href: '/accounts', label: 'Accounts', icon: '🏢' },
 		{ href: '/custom-values', label: 'Custom Values', icon: '✏️' },
+		{ href: '/schema', label: 'Schema', icon: '🗂️' },
 		{ href: '/funnels', label: 'Funnels', icon: '🔗' },
 		{ href: '/automations', label: 'Automations', icon: '⚙️' },
 		{ href: '/dashboard', label: 'Dashboard', icon: '📊' },

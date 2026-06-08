@@ -6,7 +6,7 @@ All requests target: `https://services.leadconnectorhq.com`
 
 ```
 Authorization: Bearer {token}    // pit-... token (agency or sub-account level)
-Version: 2021-07-28
+Version: <per-endpoint>          // /objects→2023-02-21, /customValues+/customFields→2021-04-15, else 2021-07-28 (store.GHLVersionFor)
 Content-Type: application/json   // only when sending a body
 ```
 

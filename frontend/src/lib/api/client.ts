@@ -43,6 +43,15 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 	return res.json();
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+	const res = await apiFetch(path, { method: 'DELETE' });
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`DELETE ${path} → ${res.status}: ${text}`);
+	}
+	return res.json();
+}
+
 // Typed GHL proxy helpers — route through /api/ghl/*
 export async function ghlGet<T>(ghlPath: string): Promise<T> {
 	return apiGet(`/api/ghl${ghlPath}`);

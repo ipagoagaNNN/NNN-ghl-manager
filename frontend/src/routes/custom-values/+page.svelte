@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { session } from '$lib/stores/session.svelte.js';
-	import { apiGet, apiPost } from '$lib/api/client.js';
+	import { apiGet, apiPost, apiDelete } from '$lib/api/client.js';
 	import { accounts, loadLibrary } from '$lib/stores/accounts.svelte.js';
 	import { BRAND_PRESETS } from '$lib/data/brand-presets.js';
 
@@ -162,10 +162,144 @@
 		}
 	}
 
+	let deletingId = $state<string | null>(null);
+
+	async function deleteCV(locId: string, cv: CVItem) {
+		if (!confirm(`Delete custom value "${cv.name}"? This cannot be undone.`)) return;
+		deletingId = cv.id;
+		error = '';
+		try {
+			await apiDelete(`/api/cv/${encodeURIComponent(locId)}/${encodeURIComponent(cv.id)}`);
+			const loc = locations.find((l) => l.locationId === locId);
+			if (loc) loc.cvs = loc.cvs.filter((c) => c.id !== cv.id);
+			statusMsg = `Deleted "${cv.name}".`;
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Delete failed';
+		} finally {
+			deletingId = null;
+		}
+	}
+
 	function filteredCVs(cvs: CVItem[]): CVItem[] {
 		const q = search.trim().toLowerCase();
 		if (!q) return cvs;
 		return cvs.filter((cv) => cv.name.toLowerCase().includes(q) || cv.value.toLowerCase().includes(q));
+	}
+
+	// ── New Patient Link scanner (M3 decision D-3.1) ──────────────────────────
+	// Read-only audit of each account's booking-link CV against its registered
+	// domain. Fixes are applied through the same POST /api/cv/bulk path.
+	interface NPLResult {
+		locationId: string;
+		name: string;
+		domain: string;
+		cvId?: string;
+		cvName?: string;
+		value: string;
+		verdict: 'valid' | 'valid_unverified' | 'missing' | 'malformed' | 'domain_mismatch' | 'error';
+		detail?: string;
+		error?: string;
+	}
+	interface NPLSummary {
+		total: number;
+		valid: number;
+		missing: number;
+		malformed: number;
+		domainMismatch: number;
+		errors: number;
+	}
+	interface NPLScanResponse {
+		key: string;
+		results: NPLResult[];
+		summary: NPLSummary;
+	}
+
+	const NPL_BADGE: Record<string, { label: string; cls: string }> = {
+		valid: { label: 'Valid', cls: 'ok' },
+		valid_unverified: { label: 'Valid (no domain)', cls: 'warn' },
+		missing: { label: 'Missing', cls: 'bad' },
+		malformed: { label: 'Malformed', cls: 'bad' },
+		domain_mismatch: { label: 'Domain mismatch', cls: 'warn' },
+		error: { label: 'Error', cls: 'bad' }
+	};
+
+	let nplKey = $state('New Patient Link');
+	let nplScan = $state<NPLScanResponse | null>(null);
+	let nplLoading = $state(false);
+	let nplApplying = $state(false);
+	let nplError = $state('');
+	let nplProblemsOnly = $state(true);
+	// nplFixes[locationId] = corrected link (only meaningful for fixable rows)
+	let nplFixes = $state<Record<string, string>>({});
+
+	function nplIsFixable(r: NPLResult): boolean {
+		return !!r.cvId && (r.verdict === 'malformed' || r.verdict === 'domain_mismatch');
+	}
+
+	async function runNplScan() {
+		const ids = targetIds();
+		if (ids.length === 0) {
+			nplError = 'No accounts with tokens (or none selected).';
+			return;
+		}
+		nplLoading = true;
+		nplError = '';
+		nplScan = null;
+		nplFixes = {};
+		try {
+			const q = `/api/cv/npl-scan?locationIds=${encodeURIComponent(ids.join(','))}&key=${encodeURIComponent(nplKey)}`;
+			const data = await apiGet<NPLScanResponse>(q);
+			nplScan = data;
+			// Prefill fixable rows with the current (wrong) value so the operator can correct it.
+			for (const r of data.results) {
+				if (nplIsFixable(r)) nplFixes[r.locationId] = r.value;
+			}
+		} catch (e) {
+			nplError = e instanceof Error ? e.message : 'NPL scan failed';
+		} finally {
+			nplLoading = false;
+		}
+	}
+
+	function nplVisibleResults(): NPLResult[] {
+		if (!nplScan) return [];
+		if (!nplProblemsOnly) return nplScan.results;
+		return nplScan.results.filter((r) => r.verdict !== 'valid' && r.verdict !== 'valid_unverified');
+	}
+
+	const nplFixCount = $derived.by(() => {
+		if (!nplScan) return 0;
+		let n = 0;
+		for (const r of nplScan.results) {
+			const v = (nplFixes[r.locationId] ?? '').trim();
+			if (nplIsFixable(r) && v !== '' && v !== r.value) n++;
+		}
+		return n;
+	});
+
+	async function applyNplFixes() {
+		if (!nplScan) return;
+		const updates: { locationId: string; customValueId: string; name: string; value: string }[] = [];
+		for (const r of nplScan.results) {
+			if (!nplIsFixable(r) || !r.cvId) continue;
+			const v = (nplFixes[r.locationId] ?? '').trim();
+			if (v === '' || v === r.value) continue;
+			updates.push({ locationId: r.locationId, customValueId: r.cvId, name: r.cvName || nplScan.key, value: v });
+		}
+		if (updates.length === 0) {
+			nplError = 'No corrected links to apply.';
+			return;
+		}
+		nplApplying = true;
+		nplError = '';
+		try {
+			await apiPost<BulkResult>('/api/cv/bulk', { updates });
+			await runNplScan(); // re-scan to reflect server truth
+		} catch (e) {
+			nplError = e instanceof Error ? e.message : 'Applying fixes failed';
+		} finally {
+			nplApplying = false;
+		}
 	}
 </script>
 
@@ -204,6 +338,86 @@
 			</button>
 		</div>
 	</div>
+
+	<section class="npl">
+		<div class="npl-head">
+			<div>
+				<h2>New Patient Link scanner</h2>
+				<p class="npl-sub">
+					Audits each account's booking link against its registered domain. Read-only — corrections
+					apply through the same bulk update.
+				</p>
+			</div>
+			<div class="npl-controls">
+				<input
+					class="search"
+					type="text"
+					placeholder="CV key…"
+					bind:value={nplKey}
+					title="The custom-value name that holds the booking link"
+				/>
+				<button class="btn-secondary" onclick={runNplScan} disabled={nplLoading}>
+					{nplLoading ? 'Scanning…' : 'Scan links'}
+				</button>
+			</div>
+		</div>
+
+		{#if nplError}<div class="error">{nplError}</div>{/if}
+
+		{#if nplScan}
+			<div class="npl-summary">
+				<span class="pill ok">{nplScan.summary.valid} valid</span>
+				<span class="pill warn">{nplScan.summary.domainMismatch} domain mismatch</span>
+				<span class="pill bad">{nplScan.summary.malformed} malformed</span>
+				<span class="pill bad">{nplScan.summary.missing} missing</span>
+				{#if nplScan.summary.errors > 0}<span class="pill bad">{nplScan.summary.errors} error</span>{/if}
+				<div class="npl-actions">
+					<label class="npl-toggle">
+						<input type="checkbox" bind:checked={nplProblemsOnly} />
+						Problems only
+					</label>
+					<button class="btn" onclick={applyNplFixes} disabled={nplApplying || nplFixCount === 0}>
+						{nplApplying ? 'Applying…' : `Apply ${nplFixCount} fix(es)`}
+					</button>
+				</div>
+			</div>
+
+			{#if nplVisibleResults().length === 0}
+				<div class="info">
+					No accounts to show{nplProblemsOnly ? ' — every scanned link is valid 🎉' : ''}.
+				</div>
+			{:else}
+				<div class="npl-list">
+					{#each nplVisibleResults() as r (r.locationId)}
+						<div class="npl-row">
+							<div class="npl-acct">
+								<span class="npl-name">{r.name || r.locationId}</span>
+								<span class="npl-domain">{r.domain || 'no domain set'}</span>
+							</div>
+							<span class="pill {NPL_BADGE[r.verdict]?.cls ?? 'warn'}">
+								{NPL_BADGE[r.verdict]?.label ?? r.verdict}
+							</span>
+							{#if nplIsFixable(r)}
+								<input
+									class="cv-input npl-fix"
+									type="text"
+									value={nplFixes[r.locationId] ?? ''}
+									oninput={(e) => (nplFixes[r.locationId] = e.currentTarget.value)}
+									placeholder="corrected https://…"
+								/>
+							{:else if r.verdict === 'missing'}
+								<span class="npl-note">no "{nplScan.key}" value — create it in GHL first</span>
+							{:else if r.verdict === 'error'}
+								<span class="npl-note">{r.error}</span>
+							{:else}
+								<span class="npl-value" title={r.value}>{r.value}</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		{/if}
+	</section>
 
 	{#if error}<div class="error">{error}</div>{/if}
 	{#if statusMsg}<div class="status">{statusMsg}</div>{/if}
@@ -253,9 +467,18 @@
 								value={currentValue(loc.locationId, cv)}
 								oninput={(e) => setPending(loc.locationId, cv.id, e.currentTarget.value)}
 							/>
-							{#if isChanged(loc.locationId, cv)}
-								<span class="changed-dot" title="Edited — not yet applied"></span>
-							{/if}
+							<span
+								class="changed-dot"
+								class:visible={isChanged(loc.locationId, cv)}
+								title="Edited — not yet applied"
+							></span>
+							<button
+								class="cv-del"
+								title="Delete this custom value"
+								aria-label={`Delete ${cv.name}`}
+								onclick={() => deleteCV(loc.locationId, cv)}
+								disabled={deletingId === cv.id}
+							>{deletingId === cv.id ? '…' : '🗑'}</button>
 						</div>
 					{/each}
 				</div>
@@ -330,7 +553,7 @@
 
 	.cv-list { display: flex; flex-direction: column; gap: 8px; }
 	.cv-row {
-		display: grid; grid-template-columns: 260px 1fr 16px; gap: 12px; align-items: center;
+		display: grid; grid-template-columns: 260px 1fr 16px 30px; gap: 12px; align-items: center;
 		padding: 6px 8px; border-radius: 8px;
 	}
 	.cv-row.changed { background: rgba(255,29,141,0.05); }
@@ -341,5 +564,45 @@
 	}
 	.cv-input:focus { outline: none; border-color: var(--accent); }
 	.cv-row.changed .cv-input { border-color: var(--accent); }
-	.changed-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+	.changed-dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+	.changed-dot.visible { background: var(--accent); }
+	.cv-del {
+		width: 28px; height: 28px; border: 1.5px solid var(--border); border-radius: 8px;
+		background: transparent; cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+		display: flex; align-items: center; justify-content: center;
+	}
+	.cv-del:hover { border-color: var(--error); background: rgba(255,59,92,0.06); }
+	.cv-del:disabled { opacity: 0.5; cursor: not-allowed; }
+
+	/* New Patient Link scanner */
+	.npl {
+		background: var(--surface); border: 1.5px solid var(--border);
+		border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px;
+	}
+	.npl-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+	.npl-head h2 { font-size: 16px; font-weight: 700; }
+	.npl-sub { font-size: 12px; color: var(--text2); margin-top: 2px; max-width: 520px; }
+	.npl-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+	.npl-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+	.npl-actions { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+	.npl-toggle { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+	.pill { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+	.pill.ok { background: rgba(0,201,122,0.12); color: var(--success); }
+	.pill.warn { background: rgba(255,170,0,0.16); color: #b76e00; }
+	.pill.bad { background: rgba(255,59,92,0.12); color: var(--error); }
+	.npl-list { display: flex; flex-direction: column; gap: 4px; }
+	.npl-row {
+		display: grid; grid-template-columns: 220px 140px 1fr; gap: 12px; align-items: center;
+		padding: 7px 8px; border-radius: 8px;
+	}
+	.npl-row:nth-child(odd) { background: rgba(0,0,0,0.02); }
+	.npl-acct { display: flex; flex-direction: column; min-width: 0; }
+	.npl-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.npl-domain { font-size: 11px; color: var(--text2); font-family: ui-monospace, monospace; }
+	.npl-value {
+		font-size: 12px; color: var(--text2); font-family: ui-monospace, monospace;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.npl-note { font-size: 12px; color: var(--text2); font-style: italic; }
+	.npl-fix { width: 100%; }
 </style>

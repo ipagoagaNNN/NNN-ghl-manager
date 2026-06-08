@@ -11,10 +11,7 @@ import (
 	"github.com/ipagoagaNNN/nnn-ghl-manager/backend/internal/store"
 )
 
-const (
-	ghlVersion = "2021-07-28"
-	maxRetries = 3
-)
+const maxRetries = 3
 
 // Handler is the GHL API proxy. It strips /api/ghl from the path,
 // injects the correct Bearer token from the vault, and forwards the request.
@@ -80,7 +77,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Version", ghlVersion)
+		// Version is per-endpoint (customValues/customFields, objects, and the
+		// default differ); resolve it from the path instead of hardcoding one.
+		req.Header.Set("Version", store.GHLVersionFor(ghlPath))
+		req.Header.Set("Accept", "application/json")
 		if len(bodyBytes) > 0 {
 			req.Header.Set("Content-Type", "application/json")
 		}

@@ -109,7 +109,7 @@ func fetchCustomValues(r *http.Request, client *http.Client, token, locationID s
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Version", "2021-07-28")
+	req.Header.Set("Version", store.VersionCustomValues)
 
 	// #nosec G107 G704 -- see above
 	resp, err := client.Do(req)
@@ -259,7 +259,7 @@ func putCustomValue(r *http.Request, client *http.Client, token string, upd cvUp
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Version", "2021-07-28")
+	req.Header.Set("Version", store.VersionCustomValues)
 	req.Header.Set("Content-Type", "application/json")
 
 	// #nosec G107 G704 -- see above
@@ -290,4 +290,79 @@ func splitIDs(raw string) []string {
 		}
 	}
 	return out
+}
+
+// GetCustomValue fetches a single custom value
+// (GET /locations/{id}/customValues/{cvId}, Version 2021-04-15). Read-only; the
+// GHL response is passed through with its status.
+func GetCustomValue(vault *store.Vault) http.HandlerFunc {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		locationID := r.PathValue("locationId")
+		cvID := r.PathValue("cvId")
+		if locationID == "" || cvID == "" {
+			http.Error(w, "locationId and cvId required", http.StatusBadRequest)
+			return
+		}
+		token, ok := vault.LocToken(locationID)
+		if !ok || token == "" {
+			http.Error(w, "no token for this location", http.StatusUnauthorized)
+			return
+		}
+
+		target := fmt.Sprintf("%s/locations/%s/customValues/%s",
+			store.GHLBase(), url.PathEscape(locationID), url.PathEscape(cvID))
+		body, status, err := ghlRequest(r.Context(), client, http.MethodGet, token, target, nil)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("GHL error: %v", err), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if _, werr := w.Write(body); werr != nil {
+			log.Printf("cv get: write error: %v", werr)
+		}
+	}
+}
+
+// DeleteCustomValue deletes a single custom value
+// (DELETE /locations/{id}/customValues/{cvId}, Version 2021-04-15).
+func DeleteCustomValue(vault *store.Vault) http.HandlerFunc {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		locationID := r.PathValue("locationId")
+		cvID := r.PathValue("cvId")
+		if locationID == "" || cvID == "" {
+			http.Error(w, "locationId and cvId required", http.StatusBadRequest)
+			return
+		}
+		token, ok := vault.LocToken(locationID)
+		if !ok || token == "" {
+			http.Error(w, "no token for this location", http.StatusUnauthorized)
+			return
+		}
+
+		target := fmt.Sprintf("%s/locations/%s/customValues/%s",
+			store.GHLBase(), url.PathEscape(locationID), url.PathEscape(cvID))
+		body, status, err := ghlRequest(r.Context(), client, http.MethodDelete, token, target, nil)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("GHL error: %v", err), http.StatusBadGateway)
+			return
+		}
+		if !isOK(status) {
+			http.Error(w, fmt.Sprintf("GHL HTTP %d: %s", status, truncate(string(body), 200)), status)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"ok":            true,
+			"locationId":    locationID,
+			"customValueId": cvID,
+		}); err != nil {
+			log.Printf("cv delete: encode response error: %v", err)
+		}
+	}
 }

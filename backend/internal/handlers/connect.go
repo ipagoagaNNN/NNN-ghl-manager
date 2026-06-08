@@ -178,7 +178,7 @@ func validateLocationToken(r *http.Request, client *http.Client, token, location
 		return err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Version", "2021-07-28")
+	httpReq.Header.Set("Version", store.VersionCustomValues) // validation hits /customValues
 
 	// #nosec G107 G704 -- see above
 	resp, err := client.Do(httpReq)
