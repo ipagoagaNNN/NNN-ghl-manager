@@ -39,25 +39,38 @@ discipline** sections exactly. They are not optional.
 
 ---
 
-## Run & verify
+## Build, run & verify (the commands)
 
+**Run it — two terminals:**
 ```bash
-# backend API → http://localhost:8091   (port is hardcoded; 8080/8090/9090 are taken by Docker on the lead dev's box)
-cd backend && go run ./cmd/server
+# Terminal 1 — backend API → http://localhost:8091  (port hardcoded; 8080/8090/9090 are taken by Docker on the lead dev's box)
+cd backend && go run ./cmd/server           # success = prints "...listening on :8091" and stays up
 
-# frontend SPA → http://localhost:5173   (proxies /api → :8091)
-cd frontend && npm install && npm run dev
+# Terminal 2 — frontend SPA → http://localhost:5173  (proxies /api → :8091)
+cd frontend && npm install && npm run dev    # npm install only the first time / after package.json changes
 ```
 
-Before every commit, both must pass:
-
+**Verify gate — run before EVERY commit. All four must be green (confirmed passing on this repo):**
 ```bash
-cd backend  && go build ./... && go vet ./...
-cd frontend && npm run check        # svelte-check — must report 0 errors
+cd backend  && go build ./...     # 1. compiles
+cd backend  && go vet ./...       # 2. static analysis — fix every finding, never suppress it
+cd frontend && npm run check      # 3. svelte-check — must report 0 errors / 0 warnings
+cd frontend && npm run build      # 4. production build must succeed (catches what `npm run dev` hides)
+```
+PowerShell one-liner from the repo root:
+```powershell
+cd backend; go build ./...; go vet ./...; cd ..\frontend; npm run check; npm run build; cd ..
+```
+If any step errors / exits non-zero, **the change is broken — fix it before committing** (see *If a
+change breaks the app*). Never commit a red build.
+
+**Rust workers — only if you touch `workers/`:**
+```bash
+cd workers && cargo build && cargo clippy && cargo test
 ```
 
-No database, no env vars, no secrets are needed to run it. The token vault is **in-memory and cleared
-on backend restart** — reconnect accounts via the Connect page after each restart.
+No database, no env vars, no secrets are needed to run it. The token vault is **in-memory and cleared on
+backend restart** — reconnect accounts via the Connect page after each restart.
 
 ---
 
@@ -213,6 +226,44 @@ If you want a review first, push the feature branch and open a PR **into `dev/Mi
 
 Getting `dev/Miriam` onto `main` is the **lead dev's** review step — not yours.
 
+## If a change breaks the app — detect & roll back
+
+**Detect (in order — stop at the first red):**
+1. **Build:** `go build ./...` or `npm run build` fails → compilation is broken. The first error names the file + line.
+2. **Static check:** `go vet ./...` errors, or `npm run check` reports > 0 errors → type / lint breakage.
+3. **Startup:** backend doesn't print `listening on :8091` (or exits); `npm run dev` shows an error overlay → runtime/startup broke.
+4. **Page load:** open http://localhost:5173, load the page you changed, open **DevTools → Console + Network**. A red JS error = frontend bug; a failed `/api/...` request (4xx/5xx) = backend bug.
+5. **Liveness probes:** backend `curl http://localhost:8091/api/accounts` → HTTP 200 + JSON (connection refused = backend down); frontend root → renders. (There is no `/health` endpoint.)
+6. **Smoke:** click through the changed page + `Connect → an account`; confirm no console errors and the data still loads.
+
+**Roll back (least → most drastic — use the gentlest that works):**
+
+Your safety net is the workflow itself: a broken feature lives on its `feature/*` branch and **never reached `dev/Miriam`** (you only merge after a green verify). So the cleanest recovery is usually to throw the branch away and re-cut:
+```bash
+git switch dev/Miriam                       # dev/Miriam is still clean
+git branch -D feature/<slug>                # delete the broken local branch
+git push origin --delete feature/<slug>     # only if you had pushed it
+```
+Finer-grained undo:
+```bash
+git restore <file>            # discard uncommitted edits to one file
+git restore --staged <file>   # unstage a file (keep the edits)
+git reset --soft HEAD~1       # undo the last commit, KEEP the changes staged
+git reset --hard HEAD~1       # undo the last commit AND discard the changes (destructive — be sure)
+git revert <sha>              # SAFE: a new commit that undoes an already-pushed commit
+git merge --abort             # bail out of a merge you haven't committed yet
+git reflog                    # find a lost commit's sha if you reset too far
+```
+If a bad merge already landed on `dev/Miriam` **and was pushed**, undo it safely with a revert (no history rewrite):
+```bash
+git revert -m 1 <merge-sha> && git push origin dev/Miriam
+```
+Recover a wrecked local `dev/Miriam` from the server's truth:
+```bash
+git fetch origin && git switch dev/Miriam && git reset --hard origin/dev/Miriam
+```
+**Rules:** prefer `git revert` over `git reset` for anything already pushed. **Never `git push --force` `main` or `dev/Miriam`.** `--force-with-lease` is acceptable **only** on your own un-shared `feature/*` branch. When unsure, stop and ask the lead dev — don't `reset --hard` a shared branch.
+
 ## Documentation discipline (verify before, update after)
 
 Docs are part of the change, not an afterthought. Two non-negotiable halves:
@@ -256,13 +307,43 @@ If the code already disagrees with a doc, that's a bug — reconcile it (fix the
 - **One source of truth:** `MANUAL.md` = user-facing reference; `module-specs/*` = design / decisions; `llms.txt` = the agent map. Update the right one; don't duplicate the same fact in three places.
 - **Keep references honest.** If you rename a route / endpoint / file, grep the docs for the old name and fix every hit. Broken links and stale tables are bugs.
 
+## Secrets & safety — never commit credentials
+
+**Never put a secret in the repo** — not in code, tests, fixtures, docs, or commit messages. That covers
+API keys, passwords, GHL `pit-…` tokens, OAuth client secrets, Neon / Postgres connection strings, JWT
+signing secrets, and `*.key` / `*.cer` files. Tokens in this app are entered at runtime in the Connect
+page and held in the in-memory vault — there is **never** a reason to hardcode one.
+
+**Keep real secrets in a local, git-ignored file.** `.gitignore` already excludes `.env`, `*.env`,
+`backend/bin/`, `backend/*.exe`, `frontend/node_modules/`, and `workers/target/`. Put local config in
+`.env` (ignored); never force-add an ignored file.
+
+**Scan the staged diff before every commit:**
+```bash
+git diff --cached                                       # eyeball every staged line
+git diff --cached | grep -nEi "pit-|bearer |password|api[_-]?key|secret|token|authorization:"   # red flags
+```
+If that grep hits anything real, unstage it (`git restore --staged <file>`), move the value into `.env`, and re-scan.
+
+**If a secret gets committed, assume it is compromised:**
+1. **Rotate / revoke it immediately** (regenerate the key, revoke the token) — a secret in git history stays leaked even if you delete it in the next commit.
+2. Remove it from the code; move it to `.env`.
+3. **Tell the lead dev** — if it was pushed, the history needs scrubbing (`git filter-repo` / BFG) *and* the credential must be rotated regardless.
+
+**General best practices:**
+- Small, single-purpose commits with clear messages; one feature / fix per branch.
+- Run the full verify gate before every commit; never commit a red build.
+- Don't commit generated artifacts (build output, `node_modules`, binaries) — they're git-ignored; keep it that way.
+- Don't silence a lint / vet / type error to make it pass — fix the cause.
+- Validate and bound any new user input on the backend; keep the SSRF host-lock on every outbound call.
+
 ## Codex — per-task loop (do this every time)
 
 1. **Read** `llms.txt` + `docs/MANUAL.md` + the module spec for the area you're touching.
 2. **Branch:** `git switch dev/Miriam && git pull && git switch -c feature/<slug>`.
 3. **Change** the code.
 4. **Update the docs** the change affects (see the table above).
-5. **Verify:** `go build ./... && go vet ./...` and `npm run check` — both clean.
-6. **Commit** code + docs together, with a clear message.
+5. **Verify (all four green):** `go build ./...`, `go vet ./...`, `npm run check`, `npm run build` — then load the changed page and confirm 0 console errors. If anything's red, see *If a change breaks the app*.
+6. **Scan + commit:** `git diff --cached | grep -nEi "pit-|bearer|password|api[_-]?key|secret|token"` returns nothing → commit code + docs together with a clear message.
 7. **Merge** into `dev/Miriam` (`git switch dev/Miriam && git merge --no-ff feature/<slug>`) → `git push origin dev/Miriam`.
 8. **Never** target `main`. That promotion is the lead dev's call.
