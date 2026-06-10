@@ -8,8 +8,10 @@ This file orients an AI coding agent (Codex / Claude) — and any human contribu
 repo. **Read it first, then the docs it links.** Everything below is grounded in the actual code as of
 the latest commit on `main`. If this file ever disagrees with the code, the code wins — fix this file.
 
-**You are working on branch `dev/Miriam` as a full contributor.** You may change any file — frontend,
-backend, workers, or docs — **except** you must never violate a "Hard rule" below.
+**You work on `dev/Miriam` and on `feature/*` branches you cut from it — never on `main`.** As a full
+contributor you may change any file — frontend, backend, workers, or docs — **except** you must never
+violate a "Hard rule" below, and you must follow the **Branching & workflow** and **Documentation
+discipline** sections exactly. They are not optional.
 
 ---
 
@@ -28,6 +30,12 @@ backend, workers, or docs — **except** you must never violate a "Hard rule" be
 4. **Never commit secrets.** No `pit-…` tokens, no `.env`, no `*.key` / `*.cer` in commits. Tokens are
    entered at runtime in the Connect page, never hardcoded.
 5. **Respect the GHL API ceiling** (see below). Don't promise a write feature GHL's API can't do.
+6. **Never touch `main`.** Do not commit, merge, rebase, push, or open a PR into `main`. All your work
+   lives on `dev/Miriam` and on `feature/*` branches cut from it. Promoting `dev/Miriam` → `main` is the
+   lead dev's job — not a step you ever run. (See **Branching & workflow**.)
+7. **Docs ship with the code that changed them.** Read a module's docs before you touch it; update those
+   docs in the *same* feature branch when behavior changes. A change with stale docs is **not done**.
+   (See **Documentation discipline**.)
 
 ---
 
@@ -159,10 +167,102 @@ Everything in the repo is fair game — frontend pages, backend handlers, Rust w
 - `docs/architecture/platform-architecture-and-migration.md` — the longer-term CRM + CMS direction.
 - `README.md` — public overview, milestones, roadmap.
 
-## Working with Codex on `dev/Miriam`
+## Branching & workflow (follow exactly)
 
-1. Point Codex at this file (`llms.txt`) first — it is the map **and** the guardrails.
-2. Make a change → run the verify commands (`go build ./... && go vet ./...`, `npm run check`).
-3. Commit small, descriptive commits on `dev/Miriam`; push to `origin/dev/Miriam`.
-4. Open a Pull Request into `main` when something is ready for review — don't push to `main` directly.
-5. If a change alters behavior, update `docs/MANUAL.md` so `/help` stays truthful.
+```
+main                      ← PROTECTED. Never commit / merge / rebase / push / PR here. Lead dev only.
+ └─ dev/Miriam            ← your integration branch. Features land here, and ONLY here.
+     ├─ feature/<slug>    ← one branch per feature or fix. Cut from dev/Miriam, merge back to it.
+     └─ fix/<slug>
+```
+
+**Never work directly on `dev/Miriam` for a feature, and never work on `main` at all.** Every new
+feature or fix gets its own short-lived branch off `dev/Miriam`.
+
+### 1. Start a feature — branch off `dev/Miriam`
+```bash
+git switch dev/Miriam
+git pull origin dev/Miriam            # start from the latest
+git switch -c feature/<slug>          # e.g. feature/dashboard-date-filter  (use fix/<slug> for bugfixes)
+```
+
+### 2. Build it
+- **Read the docs first** (see **Documentation discipline**).
+- Make small, focused commits. Keep code **and the docs it affects in the same commit**.
+- Run the verify gate before every commit:
+  ```bash
+  cd backend  && go build ./... && go vet ./...
+  cd frontend && npm run check        # must report 0 errors
+  ```
+
+### 3. Finish — merge the feature branch into `dev/Miriam` (never `main`)
+```bash
+# from a clean feature branch (verify passes + docs updated):
+git switch dev/Miriam
+git pull origin dev/Miriam            # in case it moved
+git merge --no-ff feature/<slug>      # --no-ff keeps the feature as one reviewable bubble
+git push origin dev/Miriam
+git branch -d feature/<slug>          # optional: delete the merged branch
+```
+If you want a review first, push the feature branch and open a PR **into `dev/Miriam`** — never into `main`.
+
+### Never (hard "no")
+- ❌ `git switch main` to work, `git commit` on `main`, `git merge` into `main`, `git push origin main`, or any PR targeting `main`.
+- ❌ Committing a feature straight onto `dev/Miriam` (cut a `feature/*` branch instead).
+- ❌ Merging a branch that hasn't passed the verify gate or whose docs are stale.
+
+Getting `dev/Miriam` onto `main` is the **lead dev's** review step — not yours.
+
+## Documentation discipline (verify before, update after)
+
+Docs are part of the change, not an afterthought. Two non-negotiable halves:
+
+**Before you change anything — verify the docs:**
+1. Read `llms.txt` (this file) + `docs/MANUAL.md`.
+2. Read the module's spec: `docs/module-specs/NN-<module>.md`.
+3. Anything touching GHL behavior → read `docs/module-capabilities-and-limits.md` +
+   `docs/ghl-api-surface.md` so you don't build something GHL's API can't do.
+
+If the code already disagrees with a doc, that's a bug — reconcile it (fix the doc or the code) and say so.
+
+**After you change anything — update the docs in the same feature branch:**
+
+| You changed… | Update… |
+|---|---|
+| A feature's behavior | `docs/MANUAL.md` (it's what `/help` renders) |
+| A backend endpoint (added / removed / changed) | the API list in **`llms.txt`** *and* `docs/MANUAL.md` §5 |
+| A page / route | the page table in **`llms.txt`** *and* the nav in `frontend/src/routes/+layout.svelte` |
+| A GHL limit / capability you discovered | `docs/module-capabilities-and-limits.md` |
+| A design decision | the relevant `docs/module-specs/NN-*.md` |
+
+**Definition of done = code verifies AND docs match.** Do not mark a task complete, and do not merge into
+`dev/Miriam`, with stale docs.
+
+## Backend hygiene (Go)
+
+- **Stdlib only.** No new module in `backend/go.mod` (it has zero `require`s). If you think you need a dependency, stop and ask the lead dev.
+- **`go build ./... && go vet ./...` clean before every commit.** Fix vet findings — never commit around them.
+- **New-endpoint checklist:** register it in `cmd/server/main.go`; keep ADR-001 (token stays server-side, never in the response); set the GHL version via `store.GHLVersionFor(path)` — never hardcode a `Version` string; put the handler in that module's `handlers/<module>.go`.
+- **Decode GHL numbers that can be fractional as `float64`** (e.g. custom-field `position` = `281.25`), not `int`.
+- **Errors:** check and return them with a clear HTTP status; never `panic` in a handler; never put a token or secret in an error message or log line.
+- **One module per handler file** — match the existing shape; don't pile unrelated logic into one file.
+- **No secrets in code, tests, or fixtures** — no `pit-…`, no real location IDs you wouldn't publish.
+
+## Documentation hygiene
+
+- **Markdown lives under `docs/`** (+ root `README.md` + `llms.txt`). Prefer editing an existing doc over adding a new file.
+- **Standalone product voice** — no internal-tooling references; this doc set ships with the product.
+- **Never paste secrets** — redact tokens as `pit-…`; no live PITs, Neon strings, or keys in any doc.
+- **One source of truth:** `MANUAL.md` = user-facing reference; `module-specs/*` = design / decisions; `llms.txt` = the agent map. Update the right one; don't duplicate the same fact in three places.
+- **Keep references honest.** If you rename a route / endpoint / file, grep the docs for the old name and fix every hit. Broken links and stale tables are bugs.
+
+## Codex — per-task loop (do this every time)
+
+1. **Read** `llms.txt` + `docs/MANUAL.md` + the module spec for the area you're touching.
+2. **Branch:** `git switch dev/Miriam && git pull && git switch -c feature/<slug>`.
+3. **Change** the code.
+4. **Update the docs** the change affects (see the table above).
+5. **Verify:** `go build ./... && go vet ./...` and `npm run check` — both clean.
+6. **Commit** code + docs together, with a clear message.
+7. **Merge** into `dev/Miriam` (`git switch dev/Miriam && git merge --no-ff feature/<slug>`) → `git push origin dev/Miriam`.
+8. **Never** target `main`. That promotion is the lead dev's call.
