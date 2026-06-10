@@ -1,0 +1,168 @@
+# NNN-GHL-manager
+
+> Multi-sub-account management dashboard for a marketing agency running on GoHighLevel (GHL).
+> Stack: Svelte 5 SPA (`frontend/`) + Go stdlib backend proxy (`backend/`) + Rust workers (`workers/`).
+> One inviolable rule: GHL tokens (`pit-…`) live **server-side only** and never reach the browser.
+
+This file orients an AI coding agent (Codex / Claude) — and any human contributor — working in this
+repo. **Read it first, then the docs it links.** Everything below is grounded in the actual code as of
+the latest commit on `main`. If this file ever disagrees with the code, the code wins — fix this file.
+
+**You are working on branch `dev/Miriam` as a full contributor.** You may change any file — frontend,
+backend, workers, or docs — **except** you must never violate a "Hard rule" below.
+
+---
+
+## Hard rules (never break — this is the security contract)
+
+1. **Tokens are server-side only (ADR-001).** A GHL `pit-…` token must NEVER be sent to the browser,
+   written to a file, logged, or returned in an API response. The browser calls `/api/*`; the Go
+   backend injects the token. Responses may carry `hasToken: bool` — never the token value.
+   Enforced in `backend/internal/proxy/client.go`, `backend/internal/store/vault.go`,
+   `backend/internal/handlers/*`. Any new endpoint must keep this invariant.
+2. **Keep the SSRF guard on.** Outbound calls are host-locked to the GHL API base; the live-page funnel
+   audit only fetches validated public hosts. Don't remove the host/IP checks (`guardPublicHost` /
+   `isPublicIP` in `handlers/funnels.go`).
+3. **Backend stays standard-library-only.** No web framework, no new Go dependency without discussion —
+   `backend/go.mod` has zero `require`s; keep it that way.
+4. **Never commit secrets.** No `pit-…` tokens, no `.env`, no `*.key` / `*.cer` in commits. Tokens are
+   entered at runtime in the Connect page, never hardcoded.
+5. **Respect the GHL API ceiling** (see below). Don't promise a write feature GHL's API can't do.
+
+---
+
+## Run & verify
+
+```bash
+# backend API → http://localhost:8091   (port is hardcoded; 8080/8090/9090 are taken by Docker on the lead dev's box)
+cd backend && go run ./cmd/server
+
+# frontend SPA → http://localhost:5173   (proxies /api → :8091)
+cd frontend && npm install && npm run dev
+```
+
+Before every commit, both must pass:
+
+```bash
+cd backend  && go build ./... && go vet ./...
+cd frontend && npm run check        # svelte-check — must report 0 errors
+```
+
+No database, no env vars, no secrets are needed to run it. The token vault is **in-memory and cleared
+on backend restart** — reconnect accounts via the Connect page after each restart.
+
+---
+
+## Current state — frontend pages (`frontend/src/routes/`)
+
+Nav lives in `+layout.svelte`. Each page is a `…/+page.svelte` that calls the backend through
+`src/lib/api/client.ts` (`apiGet` / `apiPost` / `apiDelete`).
+
+| Route | File | What it does | Status |
+|---|---|---|---|
+| `/` | `+page.svelte` | Home / landing | ✅ |
+| `/connect` | `connect/+page.svelte` | Paste an agency or location `pit-…`; validates + stores server-side; resolves the friendly account name from the `Location Name` custom value | ✅ |
+| `/accounts` | `accounts/+page.svelte` | Account library (token presence, domain/meta), CSV import/export, select-to-scope | ✅ |
+| `/custom-values` | `custom-values/+page.svelte` | Bulk view/edit custom values across accounts, brand presets, New-Patient-Link (NPL) scanner, delete a CV | ✅ |
+| `/schema` | `schema/+page.svelte` | Per-account objects + custom-field schema viewer | ✅ |
+| `/automations` | `automations/+page.svelte` | Read-only workflow list (GHL Workflows API is list-only) | ✅ |
+| `/dashboard` | `dashboard/+page.svelte` | Leads-by-day, top sources, per-account analytics | ✅ |
+| `/funnels` | `funnels/+page.svelte` | Funnel list + live-page pixel/UTM audit + duplicate-pixel detection + assisted-manual fix + per-funnel **Verify** | ◐ |
+| `/dialers` | `dialers/+page.svelte` | Phone-number spam reputation (research-complete; not wired to a vendor yet) | 📝 |
+| `/help` | `help/+page.svelte` | Renders `docs/MANUAL.md` in-app via `lib/utils/markdown.ts` | ✅ |
+
+State stores: `src/lib/stores/*.svelte.ts` (Svelte 5 runes — `accounts`, `dialers`, `session`,
+`extension-bridge`). Shared data: `src/lib/data/` (`brand-presets.ts`, `pixel-snippets.ts`).
+
+## Current state — backend API (authoritative source: `backend/cmd/server/main.go`)
+
+Go 1.23, `net/http.ServeMux` (method+pattern routing). Middleware chain: CORS → RateLimit → Auth
+(Auth is a **no-op stub** until the Auth milestone).
+
+```
+POST   /api/connect                          agency PIT → list sub-accounts
+POST   /api/connect/location                 location-scoped PIT → single sub-account
+POST   /api/tokens/{locationId}              save / replace a location token
+GET    /api/accounts                         connected accounts
+GET    /api/accounts/library                 saved account library (+ CSV)
+PUT    /api/accounts/{locationId}/meta       update account metadata (name / domain)
+GET    /api/cv                               list custom values (scope with ?locationIds=)
+GET    /api/cv/npl-scan                      New-Patient-Link booking-link audit
+POST   /api/cv/bulk                          bulk update custom values  ← the ONLY GHL write
+GET    /api/cv/{locationId}/{cvId}           single custom value
+DELETE /api/cv/{locationId}/{cvId}           delete a custom value
+GET    /api/customfields/{locationId}        custom-field schema   (GHL Version 2021-04-15)
+GET    /api/objects/{locationId}             object schema         (GHL Version 2023-02-21)
+GET    /api/workflows/{locationId}           list workflows (read-only)
+GET    /api/funnels/{locationId}             list funnels
+GET    /api/funnels/{locationId}/audit       live-page pixel/UTM audit (?funnelId= ?fresh=1)
+PUT    /api/funnels/page/{pageId}            funnel page update — see GHL ceiling (assisted-manual)
+GET    /api/dashboard/{locationId}/contacts  dashboard analytics
+POST   /api/numbers/library                  dialer numbers library
+/api/ghl/*                                   generic GHL proxy (server-side token injection)
+```
+
+Handlers: `backend/internal/handlers/*.go`. Proxy + Version logic: `backend/internal/proxy/client.go`
+and `backend/internal/store/version.go`.
+
+## Architecture
+
+- **frontend/** — SvelteKit + Svelte 5 runes SPA. Calls `/api/*` only; never sees a token.
+- **backend/** — Go stdlib HTTP server on :8091. `cmd/server/main.go` (entry) → `internal/handlers`
+  (per-module) → `internal/proxy` (host-locked GHL client) → `internal/store` (in-memory token vault +
+  metadata). `internal/middleware` = CORS, rate-limit, auth-stub.
+- **workers/** — Rust (`number-matcher`, `csv-processor`). Standalone; not yet wired into the backend.
+- **GHL Version header is per-endpoint** — resolved in `store.GHLVersionFor(path)`:
+  objects → `2023-02-21`, customValues / customFields → `2021-04-15`, everything else → `2021-07-28`.
+  The wrong version makes GHL reject the call. Don't hardcode a version inside a handler.
+
+## The GHL API ceiling (read before promising a feature)
+
+GHL's public API v2 is **read-rich, write-poor**:
+
+- ✅ You can READ almost everything.
+- ✅ The only meaningful WRITE is custom values (`POST /api/cv/bulk` → GHL `PUT customValues`).
+- ⛔ There is **no** funnel/page write endpoint for any auth type. Funnel pixel fixes are
+  **assisted-manual**: audit the live page → show the exact snippet + a deep link → operator pastes &
+  publishes → Verify re-checks.
+- ⛔ Workflows are list-only.
+
+Full detail: `docs/module-capabilities-and-limits.md` and `docs/ghl-api-surface.md`.
+
+## Gotchas (these will bite you)
+
+- **GHL returns some numbers as floats.** A custom-field `position` comes back as e.g. `281.25`. Decode
+  such fields as `float64`, not `int` (an `int` decode caused a 502 — see `handlers/customfields.go`).
+- **Per-account PIT.** Each connected account uses its own `pit-…`; there is no single global token.
+- **In-memory vault.** A backend restart drops all connected tokens — reconnect via `/connect`.
+- **Svelte 5 runes**, not legacy stores: state is `$state`, derived is `$derived`. Match the existing
+  `*.svelte.ts` files rather than introducing a different pattern.
+
+## What you can change (full-contributor scope on `dev/Miriam`)
+
+Everything in the repo is fair game — frontend pages, backend handlers, Rust workers, and docs —
+**subject to the Hard rules above.** Practical guidance:
+
+- Documentation lives in `docs/` (+ root `README.md` + this file). Keep `docs/MANUAL.md` in sync when
+  you change a feature — it's what `/help` renders for users.
+- When you change a backend endpoint, update the API list in this file **and** in `docs/MANUAL.md` §5.
+- When you add a page, add it to `+layout.svelte` nav **and** to the page table above.
+
+## Documentation map (respect these — they encode hard-won decisions)
+
+- `docs/MANUAL.md` — full feature + API reference (also served at `/help`). **Start here.**
+- `docs/module-capabilities-and-limits.md` — exactly what GHL's API can and cannot do.
+- `docs/ghl-api-surface.md`, `docs/ghl-api-v2-auth-model.md` — GHL endpoints + auth / version model.
+- `docs/security-audit.md` — the token / SSRF security posture (the Hard rules, formalized).
+- `docs/module-specs/01-…-10-….md` — per-module specs (what each module should do).
+- `docs/funnels/*` — funnels API contract + verified implementation path.
+- `docs/architecture/platform-architecture-and-migration.md` — the longer-term CRM + CMS direction.
+- `README.md` — public overview, milestones, roadmap.
+
+## Working with Codex on `dev/Miriam`
+
+1. Point Codex at this file (`llms.txt`) first — it is the map **and** the guardrails.
+2. Make a change → run the verify commands (`go build ./... && go vet ./...`, `npm run check`).
+3. Commit small, descriptive commits on `dev/Miriam`; push to `origin/dev/Miriam`.
+4. Open a Pull Request into `main` when something is ready for review — don't push to `main` directly.
+5. If a change alters behavior, update `docs/MANUAL.md` so `/help` stays truthful.
